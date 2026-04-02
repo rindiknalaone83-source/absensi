@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Absensi Wajah - LevelUp HR</title>
+    <!-- Load Pustaka via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1/dist/face-api.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background: #f4f5f7; padding: 20px;}
+        .container { max-width: 400px; margin: auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        video { width: 100%; border-radius: 8px; background: #000; }
+        .btn { display: block; width: 100%; padding: 12px; background: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; margin-top: 10px; }
+        .status { margin-top: 15px; font-size: 14px; color: #555; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Absensi Mandiri</h2>
+    <video id="video" autoplay playsinline muted></video>
+    <button class="btn" id="btn-scan" onclick="prosesAbsen()">Scan Wajah</button>
+    <div class="status" id="status-text">Menginisialisasi kamera dan GPS...</div>
+</div>
+
+<script>
+    // 🔴 GANTI DENGAN URL WEB APP GOOGLE APPS SCRIPT ANDA
+    const API_URL = "URL_WEB_APP_ANDA_DI_SINI"; 
+    
+    let userLocation = { lat: null, lng: null };
+    let labeledDescriptors = [];
+
+    // 1. Inisialisasi Kamera dan GPS
+    async function init() {
+        // Ambil GPS
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(pos => {
+                userLocation.lat = pos.coords.latitude;
+                userLocation.lng = pos.coords.longitude;
+                updateStatus("GPS Terkunci.");
+            }, () => updateStatus("Gagal mengambil GPS. Izinkan lokasi."));
+        }
+        
+        // Buka Kamera
+        const video = document.getElementById('video');
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+            video.srcObject = stream;
+        } catch (err) {
+            updateStatus("Kamera diblokir atau tidak ditemukan.");
+        }
+
+        // Load Model Face API dari CDN JSDelivr
+        const MODEL_URL = 'https://jsdelivr.net';
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+        
+        // Ambil database wajah dari Google Sheet
+        await fetchDatabase();
+    }
+
+    async function fetchDatabase() {
+        updateStatus("Mengunduh database karyawan...");
+        try {
+            const response = await fetch(API_URL);
+            const data = await response.json();
+            
+            data.forEach(emp => {
+                if (emp.descriptor) {
+                    labeledDescriptors.push(new faceapi.LabeledFaceDescriptors(
+                        `${emp.id}_${emp.nama}_${emp.divisi}`,
+                        [new Float32Array(emp.descriptor)]
+                    ));
+                }
+            });
+            updateStatus("Sistem siap. Silakan arahkan wajah.");
+        } catch (e) {
+            updateStatus("Gagal terhubung ke Database Google Sheet.");
+        }
+    }
+
+    // 2. Proses Ambil Gambar & Verifikasi
+    async function prosesAbsen() {
+        updateStatus("Memindai wajah...");
+        const video = document.getElementById('video');
+        
+        // Deteksi wajah
+        const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
+        
+        if (!detection) {
+            updateStatus("Wajah tidak terdeteksi. Coba lagi.");
+            return;
+        }
+
+        if (labeledDescriptors.length === 0) {
+            updateStatus("Data pembanding kosong pada sheet.");
+            return;
+        }
+
+        // Cocokkan wajah
+        const faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6);
+        const match = faceMatcher.findBestMatch(detection.descriptor);
+        
+        if (match.label === 'unknown') {
+            updateStatus("Wajah tidak dikenali!");
+            return;
+        }
+
+        // Ambil Data Karyawan yang terdeteksi
+        const [id, nama, divisi] = match.label.split('_');
+
+        // Ambil foto base64
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const photoBase64 = canvas.toDataURL('image/jpeg', 0.5);
+
+        // Kirim data ke Google Sheet
+        kirimKeSheets({ id, nama, divisi, lat: userLocation.lat, lng: userLocation.lng, foto: photoBase64 });
+    }
+
+    async function kirimKeSheets(payload) {
+        updateStatus("Mengirim data ke Google Sheet...");
+        try {
+            const response = await fetch(API_URL, {
+                method: "POST",
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if(result.success) {
+                alert(`Absen Berhasil!\nHalo ${payload.nama} dari Divisi ${payload.divisi}`);
+                updateStatus("Selesai. Silakan bergantian.");
+            } else {
+                updateStatus("Gagal menyimpan data.");
+            }
+        } catch (e) {
+            updateStatus("Terjadi kesalahan koneksi saat mengirim data.");
+        }
+    }
+
+    function updateStatus(txt) {
+        document.getElementById('status-text').innerText = txt;
+    }
+
+    window.onload = init;
+</script>
+
+</body>
+</html>
